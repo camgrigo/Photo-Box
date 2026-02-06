@@ -18,6 +18,7 @@ final class VideoAnalysisCache {
     var featurePrintData: Data?
     var estimatedYear: Int?
     var yearSource: String?
+    var heuristicYear: Int?
     var lastAnalyzed: Date
     var analysisVersion: Int
 

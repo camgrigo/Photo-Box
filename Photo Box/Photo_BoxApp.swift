@@ -30,5 +30,12 @@ struct Photo_BoxApp: App {
             ContentView()
         }
         .modelContainer(sharedModelContainer)
+
+        WindowGroup("Video Player", id: "video-player", for: String.self) { $localIdentifier in
+            if let localIdentifier {
+                VideoPlayerWindow(localIdentifier: localIdentifier)
+            }
+        }
+        .modelContainer(sharedModelContainer)
     }
 }

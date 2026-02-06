@@ -10,10 +10,17 @@ import Photos
 import SwiftData
 
 struct DuplicateGroup: Identifiable {
-    let id = UUID()
+    let id: UUID
     let videos: [PHAsset]
     let similarityType: SimilarityType
     let similarityScore: Float
+
+    init(id: UUID = UUID(), videos: [PHAsset], similarityType: SimilarityType, similarityScore: Float) {
+        self.id = id
+        self.videos = videos
+        self.similarityType = similarityType
+        self.similarityScore = similarityScore
+    }
 
     enum SimilarityType: String, Codable {
         case exactDuplicate

@@ -13,6 +13,8 @@ import AVKit
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     @State private var photoLibraryVideos: [PHAsset] = []
     @State private var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @State private var showingVideoPicker = false
@@ -23,15 +25,23 @@ struct ContentView: View {
     @State private var dateEditAsset: PHAsset?
     @State private var dateEditSuggestedYear: Int?
     @State private var dateEditYearSource: String?
+    @State private var searchText = ""
     @Namespace private var namespace
-    
+
     // Larger cards for Mac
     let columns = [
         GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 20)
     ]
 
     private var displayedVideos: [PHAsset] {
-        showFavoritesOnly ? photoLibraryVideos.filter(\.isFavorite) : photoLibraryVideos
+        var results = showFavoritesOnly ? photoLibraryVideos.filter(\.isFavorite) : photoLibraryVideos
+        if !searchText.isEmpty {
+            let query = searchText.lowercased()
+            results = results.filter { asset in
+                matchesSearch(asset: asset, query: query)
+            }
+        }
+        return results
     }
     
     var body: some View {
@@ -103,6 +113,10 @@ struct ContentView: View {
                     }
                 }
             }
+            .searchable(text: $searchText, prompt: "Date, duration, resolution\u{2026}")
+            .onChange(of: searchText) {
+                if groupByYear { buildYearGroups() }
+            }
             .sheet(item: $dateEditAsset) { asset in
                 VideoDateEditorView(
                     asset: asset,
@@ -119,7 +133,9 @@ struct ContentView: View {
     }
     
     private var videoCountHeader: some View {
-        Text("\(displayedVideos.count) videos")
+        Text(searchText.isEmpty
+             ? "\(displayedVideos.count) videos"
+             : "\(displayedVideos.count) results")
             .font(.subheadline)
             .foregroundStyle(.gray)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -176,32 +192,55 @@ struct ContentView: View {
     }
 
     private func videoCard(for asset: PHAsset) -> some View {
-        NavigationLink {
-            VideoPlayerView(asset: asset)
-                .navigationTransition(.zoom(sourceID: asset.localIdentifier, in: namespace))
-        } label: {
-            MoviePosterCard(asset: asset)
-                .glassEffectID(asset.localIdentifier, in: namespace)
-        }
-        .buttonStyle(.plain)
-        .matchedTransitionSource(id: asset.localIdentifier, in: namespace)
-        .contextMenu {
+        videoCardButton(for: asset)
+            .contextMenu {
+                if supportsMultipleWindows {
+                    Button {
+                        openWindow(id: "video-player", value: asset.localIdentifier)
+                    } label: {
+                        Label("Open in New Window", systemImage: "macwindow.badge.plus")
+                    }
+                    Divider()
+                }
+                Button {
+                    toggleFavorite(asset)
+                } label: {
+                    Label(asset.isFavorite ? "Unfavorite" : "Favorite", systemImage: asset.isFavorite ? "heart.slash" : "heart")
+                }
+                Button {
+                    openDateEditor(for: asset)
+                } label: {
+                    Label("Change Date", systemImage: "calendar")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    deleteVideo(asset)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func videoCardButton(for asset: PHAsset) -> some View {
+        if supportsMultipleWindows {
             Button {
-                toggleFavorite(asset)
+                openWindow(id: "video-player", value: asset.localIdentifier)
             } label: {
-                Label(asset.isFavorite ? "Unfavorite" : "Favorite", systemImage: asset.isFavorite ? "heart.slash" : "heart")
+                MoviePosterCard(asset: asset)
+                    .glassEffectID(asset.localIdentifier, in: namespace)
             }
-            Button {
-                openDateEditor(for: asset)
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink {
+                VideoPlayerView(asset: asset)
+                    .navigationTransition(.zoom(sourceID: asset.localIdentifier, in: namespace))
             } label: {
-                Label("Change Date", systemImage: "calendar")
+                MoviePosterCard(asset: asset)
+                    .glassEffectID(asset.localIdentifier, in: namespace)
             }
-            Divider()
-            Button(role: .destructive) {
-                deleteVideo(asset)
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
+            .buttonStyle(.plain)
+            .matchedTransitionSource(id: asset.localIdentifier, in: namespace)
         }
     }
     
@@ -315,6 +354,39 @@ struct ContentView: View {
             }
             loadVideos()
         }
+    }
+
+    private func matchesSearch(asset: PHAsset, query: String) -> Bool {
+        // Match against formatted date
+        if let date = asset.creationDate {
+            let formatted = date.formatted(date: .long, time: .omitted).lowercased()
+            if formatted.contains(query) { return true }
+
+            let year = String(Calendar.current.component(.year, from: date))
+            if year.contains(query) { return true }
+        }
+
+        // Match against duration text (e.g. "1:30")
+        let minutes = Int(asset.duration) / 60
+        let seconds = Int(asset.duration) % 60
+        let durationText = String(format: "%d:%02d", minutes, seconds)
+        if durationText.contains(query) { return true }
+
+        // Match against resolution
+        let resolution = "\(asset.pixelWidth)x\(asset.pixelHeight)"
+        if resolution.contains(query) { return true }
+
+        // Common resolution names
+        let maxDim = max(asset.pixelWidth, asset.pixelHeight)
+        if maxDim >= 3840 && "4k".contains(query) { return true }
+        if maxDim >= 1920 && maxDim < 3840 && "1080p".contains(query) { return true }
+        if maxDim >= 1280 && maxDim < 1920 && "720p".contains(query) { return true }
+        if maxDim < 1280 && "480p".contains(query) { return true }
+
+        // Match favorite
+        if asset.isFavorite && "favorite".contains(query) { return true }
+
+        return false
     }
 
     private func openDateEditor(for asset: PHAsset) {
@@ -443,6 +515,30 @@ struct MoviePosterCard: View {
     }
 }
 
+// MARK: - Video Player Window (for multi-window)
+struct VideoPlayerWindow: View {
+    let localIdentifier: String
+    @State private var asset: PHAsset?
+
+    var body: some View {
+        NavigationStack {
+            if let asset {
+                VideoPlayerView(asset: asset)
+            } else {
+                ProgressView()
+                    .tint(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task {
+            let result = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+            asset = result.firstObject
+        }
+    }
+}
+
 // MARK: - Video Player View
 struct VideoPlayerView: View {
     let asset: PHAsset
@@ -518,12 +614,12 @@ struct VideoPlayerView: View {
             player = nil
         }
     }
-    
+
     private func loadVideo() async {
         let options = PHVideoRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .highQualityFormat
-        
+
         PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, _ in
             if let playerItem = playerItem {
                 DispatchQueue.main.async {

@@ -33,10 +33,18 @@ final class YearTaggingService {
 
         for asset in assets {
             let id = asset.localIdentifier
+            let heuristic = estimateYearFromHeuristics(asset: asset)
 
-            if let cached = cache[id], cached.estimatedYear != nil {
-                taggedCount += 1
-                continue
+            if let cached = cache[id] {
+                // Always store the heuristic year
+                if cached.heuristicYear == nil {
+                    cached.heuristicYear = heuristic
+                }
+
+                if cached.estimatedYear != nil {
+                    taggedCount += 1
+                    continue
+                }
             }
 
             let year: Int
@@ -46,13 +54,14 @@ final class YearTaggingService {
                 year = Calendar.current.component(.year, from: date)
                 source = "metadata"
             } else {
-                year = estimateYearFromHeuristics(asset: asset)
+                year = heuristic
                 source = "heuristic"
             }
 
             if let cached = cache[id] {
                 cached.estimatedYear = year
                 cached.yearSource = source
+                cached.heuristicYear = heuristic
             } else {
                 let item = VideoAnalysisCache(
                     localIdentifier: id,
@@ -63,6 +72,7 @@ final class YearTaggingService {
                 )
                 item.estimatedYear = year
                 item.yearSource = source
+                item.heuristicYear = heuristic
                 modelContext.insert(item)
             }
 

@@ -40,7 +40,7 @@ struct VideoDateEditorView: View {
                         currentDateCard
                         datePickerCard
 
-                        if let suggestedYear, yearSource == "heuristic", asset.creationDate == nil {
+                        if let suggestedYear, yearSource == "heuristic" {
                             suggestionCard(year: suggestedYear)
                         }
                     }

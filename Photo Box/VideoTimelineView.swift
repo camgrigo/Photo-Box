@@ -225,18 +225,11 @@ struct VideoTimelineView: View {
             let fraction = Double(i) / Double(thumbnailCount)
             let time = CMTime(seconds: fraction * durationSeconds, preferredTimescale: 600)
 
-            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+            if let cgImage = try? await generator.image(at: time).image {
                 images.append(UIImage(cgImage: cgImage))
             }
         }
 
         thumbnails = images
-    }
-}
-
-// CMTime comparison
-extension CMTime: @retroactive Comparable {
-    public static func < (lhs: CMTime, rhs: CMTime) -> Bool {
-        CMTimeCompare(lhs, rhs) < 0
     }
 }

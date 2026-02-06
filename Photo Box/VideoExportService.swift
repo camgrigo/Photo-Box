@@ -33,24 +33,8 @@ final class VideoExportService {
             throw ExportError.cannotCreateSession
         }
 
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mov
         exportSession.timeRange = timeRange
-
-        // Monitor progress
-        let progressTask = Task.detached { [weak exportSession] in
-            while let session = exportSession, session.status == .exporting || session.status == .waiting {
-                await MainActor.run { self.progress = Double(session.progress) * 0.8 }
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-        }
-
-        await exportSession.export()
-        progressTask.cancel()
-
-        guard exportSession.status == .completed else {
-            throw exportSession.error ?? ExportError.exportFailed
-        }
+        try await exportSession.export(to: outputURL, as: .mov)
 
         progress = 0.8
         currentStep = "Saving to library\u{2026}"
@@ -76,9 +60,8 @@ final class VideoExportService {
 
         let duration = try await asset.load(.duration)
 
-        var boundaries = [CMTime.zero] + splitPoints.sorted { $0 < $1 } + [duration]
-        // Remove duplicates and ensure ordering
-        boundaries = boundaries.sorted { $0 < $1 }
+        var boundaries = [CMTime.zero] + splitPoints.sorted() + [duration]
+        boundaries = boundaries.sorted()
 
         let segmentCount = boundaries.count - 1
         var exportedURLs: [URL] = []
@@ -119,14 +102,7 @@ final class VideoExportService {
                 throw ExportError.cannotCreateSession
             }
 
-            exportSession.outputURL = outputURL
-            exportSession.outputFileType = .mov
-
-            await exportSession.export()
-
-            guard exportSession.status == .completed else {
-                throw exportSession.error ?? ExportError.exportFailed
-            }
+            try await exportSession.export(to: outputURL, as: .mov)
 
             exportedURLs.append(outputURL)
             progress = Double(i + 1) / Double(segmentCount) * 0.8

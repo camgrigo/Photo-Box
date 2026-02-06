@@ -264,7 +264,7 @@ final class DuplicateDetectionService {
 
         for position in positions {
             let time = CMTime(seconds: totalSeconds * position, preferredTimescale: 600)
-            guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { continue }
+            guard let cgImage = try? await generator.image(at: time).image else { continue }
 
             let request = VNGenerateImageFeaturePrintRequest()
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])

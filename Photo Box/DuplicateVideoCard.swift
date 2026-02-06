@@ -12,6 +12,7 @@ struct DuplicateVideoCard: View {
     let asset: PHAsset
     let isSelected: Bool
     let onToggle: () -> Void
+    var onChangeDate: (() -> Void)?
 
     @State private var thumbnail: UIImage?
     @State private var fileSize: String = "\u{2026}"
@@ -69,6 +70,30 @@ struct DuplicateVideoCard: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { onToggle() }
+        .contextMenu {
+            Button {
+                onToggle()
+            } label: {
+                Label(isSelected ? "Deselect" : "Select for Deletion", systemImage: isSelected ? "xmark.circle" : "checkmark.circle")
+            }
+            if let onChangeDate {
+                Button {
+                    onChangeDate()
+                } label: {
+                    Label("Change Date", systemImage: "calendar")
+                }
+            }
+            Button {
+                Task {
+                    try? await PHPhotoLibrary.shared().performChanges {
+                        let request = PHAssetChangeRequest(for: asset)
+                        request.isFavorite = !asset.isFavorite
+                    }
+                }
+            } label: {
+                Label(asset.isFavorite ? "Unfavorite" : "Favorite", systemImage: asset.isFavorite ? "heart.slash" : "heart")
+            }
+        }
         .task {
             await loadThumbnail()
             loadFileSize()
