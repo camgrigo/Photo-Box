@@ -12,7 +12,9 @@ import SwiftData
 struct Photo_BoxApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            VideoItem.self,
+            VideoAnalysisCache.self,
+            PersistedDuplicateGroup.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

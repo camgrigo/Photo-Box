@@ -7,12 +7,17 @@
 
 import Foundation
 import SwiftData
+import Photos
 
 @Model
-final class Item {
-    var timestamp: Date
+final class VideoItem {
+    var id: String
+    var dateAdded: Date
+    var localIdentifier: String
     
-    init(timestamp: Date) {
-        self.timestamp = timestamp
+    init(localIdentifier: String) {
+        self.id = UUID().uuidString
+        self.dateAdded = Date()
+        self.localIdentifier = localIdentifier
     }
 }
