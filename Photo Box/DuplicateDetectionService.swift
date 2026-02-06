@@ -18,6 +18,7 @@ final class DuplicateDetectionService {
     var progress: Double = 0.0
     var currentStep: String = ""
     var isAnalyzing: Bool = false
+    var foundGroups: [DuplicateGroup] = []
 
     private let modelContext: ModelContext
 
@@ -27,9 +28,11 @@ final class DuplicateDetectionService {
 
     // MARK: - Public API
 
+    @discardableResult
     func detectDuplicates(in assets: [PHAsset], includeVisualSimilarity: Bool = true) async throws -> [DuplicateGroup] {
         isAnalyzing = true
         progress = 0.0
+        foundGroups = []
         defer {
             isAnalyzing = false
             progress = 1.0
@@ -39,20 +42,26 @@ final class DuplicateDetectionService {
         currentStep = "Analyzing metadata\u{2026}"
         let cache = try await buildCache(for: assets)
 
-        // Step 2: Tier 1 — exact duplicates
+        // Step 2: Tier 1 — exact duplicates (same resolution, duration ≈, same file size)
         currentStep = "Finding exact duplicates\u{2026}"
-        var groups = findExactDuplicates(cache: cache, assets: assets)
-        progress = 0.5
+        let exactGroups = findExactDuplicates(cache: cache, assets: assets)
+        foundGroups.append(contentsOf: exactGroups)
+        progress = 0.25
 
-        // Step 3: Tier 2 — visual similarity
+        // Step 3: Tier 1.5 — near duplicates (same resolution, duration within 3s)
+        currentStep = "Finding near duplicates\u{2026}"
+        let nearGroups = findNearDuplicates(cache: cache, assets: assets, excludeGroups: exactGroups)
+        foundGroups.append(contentsOf: nearGroups)
+        progress = 0.35
+
+        // Step 4: Tier 2 — visual similarity
         if includeVisualSimilarity {
-            currentStep = "Analyzing visual similarity\u{2026}"
-            let similarGroups = try await findVisuallySimilar(cache: cache, assets: assets, excludeExactDuplicates: groups)
-            groups.append(contentsOf: similarGroups)
+            let allPriorGroups = exactGroups + nearGroups
+            try await findVisuallySimilar(cache: cache, assets: assets, excludeGroups: allPriorGroups)
         }
 
         currentStep = "Done"
-        return groups
+        return foundGroups
     }
 
     // MARK: - Cache
@@ -68,7 +77,7 @@ final class DuplicateDetectionService {
 
         let total = Double(assets.count)
         for (index, asset) in assets.enumerated() {
-            progress = Double(index) / total * 0.3
+            progress = Double(index) / total * 0.2
 
             if cache[asset.localIdentifier] == nil {
                 let fileSize = fileSizeForAsset(asset)
@@ -111,7 +120,7 @@ final class DuplicateDetectionService {
                       !processed.contains(otherId),
                       let otherCache = cache[otherId] else { continue }
 
-                if abs(cacheItem.duration - otherCache.duration) < 0.1,
+                if abs(cacheItem.duration - otherCache.duration) < 0.5,
                    cacheItem.pixelWidth == otherCache.pixelWidth,
                    cacheItem.pixelHeight == otherCache.pixelHeight,
                    cacheItem.fileSize == otherCache.fileSize,
@@ -130,20 +139,59 @@ final class DuplicateDetectionService {
         return groups
     }
 
+    // MARK: - Tier 1.5: Near Duplicates
+
+    private func findNearDuplicates(cache: [String: VideoAnalysisCache], assets: [PHAsset], excludeGroups: [DuplicateGroup]) -> [DuplicateGroup] {
+        let excludedIds = Set(excludeGroups.flatMap { $0.videos.map(\.localIdentifier) })
+        let candidates = assets.filter { !excludedIds.contains($0.localIdentifier) }
+
+        var groups: [DuplicateGroup] = []
+        var processed = Set<String>()
+
+        for asset in candidates {
+            let id = asset.localIdentifier
+            guard !processed.contains(id), let cacheItem = cache[id] else { continue }
+
+            var matches: [PHAsset] = [asset]
+
+            for other in candidates {
+                let otherId = other.localIdentifier
+                guard otherId != id,
+                      !processed.contains(otherId),
+                      let otherCache = cache[otherId] else { continue }
+
+                // Same resolution, duration within 3 seconds
+                if cacheItem.pixelWidth == otherCache.pixelWidth,
+                   cacheItem.pixelHeight == otherCache.pixelHeight,
+                   abs(cacheItem.duration - otherCache.duration) < 3.0 {
+                    matches.append(other)
+                    processed.insert(otherId)
+                }
+            }
+
+            if matches.count > 1 {
+                groups.append(DuplicateGroup(videos: matches, similarityType: .nearDuplicate, similarityScore: 0.0))
+            }
+            processed.insert(id)
+        }
+
+        return groups
+    }
+
     // MARK: - Tier 2: Visual Similarity
 
     private func findVisuallySimilar(
         cache: [String: VideoAnalysisCache],
         assets: [PHAsset],
-        excludeExactDuplicates: [DuplicateGroup]
-    ) async throws -> [DuplicateGroup] {
-        let exactIds = Set(excludeExactDuplicates.flatMap { $0.videos.map(\.localIdentifier) })
-        let candidates = assets.filter { !exactIds.contains($0.localIdentifier) }
+        excludeGroups: [DuplicateGroup]
+    ) async throws {
+        let excludedIds = Set(excludeGroups.flatMap { $0.videos.map(\.localIdentifier) })
+        let candidates = assets.filter { !excludedIds.contains($0.localIdentifier) }
 
         // Generate feature prints for candidates that don't have them
         let total = Double(candidates.count)
         for (index, asset) in candidates.enumerated() {
-            progress = 0.5 + (Double(index) / total * 0.35)
+            progress = 0.35 + (Double(index) / total * 0.45)
             currentStep = "Analyzing video \(index + 1) of \(candidates.count)\u{2026}"
 
             if let cacheItem = cache[asset.localIdentifier], cacheItem.featurePrintData == nil {
@@ -155,11 +203,10 @@ final class DuplicateDetectionService {
 
         try modelContext.save()
 
-        // Compare feature prints
+        // Compare feature prints — stream results as found
         currentStep = "Comparing videos\u{2026}"
-        var groups: [DuplicateGroup] = []
         var processed = Set<String>()
-        let threshold: Float = 15.0
+        let threshold: Float = 30.0
 
         for asset in candidates {
             let id = asset.localIdentifier
@@ -190,13 +237,12 @@ final class DuplicateDetectionService {
             }
 
             if matches.count > 1 {
-                groups.append(DuplicateGroup(videos: matches, similarityType: .visuallySimilar, similarityScore: bestScore))
+                foundGroups.append(DuplicateGroup(videos: matches, similarityType: .visuallySimilar, similarityScore: bestScore))
             }
             processed.insert(id)
         }
 
         progress = 0.95
-        return groups
     }
 
     // MARK: - Feature Print Extraction

@@ -21,28 +21,38 @@ struct DuplicateFinderView: View {
     @State private var service: DuplicateDetectionService?
     @State private var lastScanDate: Date?
 
+    private var displayedGroups: [DuplicateGroup] {
+        if let service, !service.foundGroups.isEmpty {
+            return service.foundGroups
+        }
+        return duplicateGroups
+    }
+
+    private var isScanning: Bool {
+        service?.isAnalyzing == true
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                if let service, service.isAnalyzing {
-                    scanningView(service: service)
-                } else if hasScanned {
-                    resultsView
+                if displayedGroups.isEmpty {
+                    if isScanning {
+                        scanningView(service: service!)
+                    } else if hasScanned {
+                        noResultsView
+                    } else {
+                        emptyStateView
+                    }
                 } else {
-                    emptyStateView
+                    liveResultsView
                 }
             }
             .navigationTitle("Find Duplicates")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                if !hasScanned, service?.isAnalyzing != true {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Scan") { Task { await performScan() } }
-                    }
-                }
-                if hasScanned {
+                if hasScanned, !isScanning {
                     ToolbarItem(placement: .primaryAction) {
                         Button("Rescan") { Task { await performScan() } }
                     }
@@ -57,7 +67,7 @@ struct DuplicateFinderView: View {
         }
     }
 
-    // MARK: - States
+    // MARK: - Views
 
     private func scanningView(service: DuplicateDetectionService) -> some View {
         VStack(spacing: 24) {
@@ -77,6 +87,40 @@ struct DuplicateFinderView: View {
         .padding(40)
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
         .padding()
+    }
+
+    private func scanningBanner(service: DuplicateDetectionService) -> some View {
+        VStack(spacing: 8) {
+            ProgressView(value: service.progress)
+                .tint(.blue)
+            HStack {
+                Text(service.currentStep)
+                    .font(.caption)
+                    .foregroundStyle(.gray)
+                Spacer()
+                Text("\(Int(service.progress * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.gray)
+                    .contentTransition(.numericText())
+            }
+        }
+        .padding(16)
+        .glassEffect(.regular, in: .rect(cornerRadius: 12))
+    }
+
+    private var noResultsView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 60))
+                .foregroundStyle(.green)
+            Text("No Duplicates Found")
+                .font(.title2)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white)
+            Text("Your video library looks clean!")
+                .font(.body)
+                .foregroundStyle(.gray)
+        }
     }
 
     private var emptyStateView: some View {
@@ -115,38 +159,25 @@ struct DuplicateFinderView: View {
         .padding()
     }
 
-    private var resultsView: some View {
-        Group {
-            if duplicateGroups.isEmpty {
-                VStack(spacing: 20) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 60))
-                        .foregroundStyle(.green)
-                    Text("No Duplicates Found")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                    Text("Your video library looks clean!")
-                        .font(.body)
-                        .foregroundStyle(.gray)
+    private var liveResultsView: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                if let service, service.isAnalyzing {
+                    scanningBanner(service: service)
                 }
-            } else {
-                ScrollView {
-                    VStack(spacing: 20) {
-                        summaryCard
 
-                        ForEach(duplicateGroups) { group in
-                            NavigationLink {
-                                DuplicateGroupDetailView(group: group)
-                            } label: {
-                                groupCard(group)
-                            }
-                            .buttonStyle(.plain)
-                        }
+                summaryCard
+
+                ForEach(displayedGroups) { group in
+                    NavigationLink {
+                        DuplicateGroupDetailView(group: group)
+                    } label: {
+                        groupCard(group)
                     }
-                    .padding(24)
+                    .buttonStyle(.plain)
                 }
             }
+            .padding(24)
         }
     }
 
@@ -154,16 +185,16 @@ struct DuplicateFinderView: View {
         VStack(spacing: 12) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text("\(duplicateGroups.count)")
+                    Text("\(displayedGroups.count)")
                         .font(.title2.bold())
                         .foregroundStyle(.white)
-                    Text(duplicateGroups.count == 1 ? "Group" : "Groups")
+                    Text(displayedGroups.count == 1 ? "Group" : "Groups")
                         .font(.caption)
                         .foregroundStyle(.gray)
                 }
                 Spacer()
                 VStack(alignment: .trailing) {
-                    Text("\(duplicateGroups.reduce(0) { $0 + $1.videos.count })")
+                    Text("\(displayedGroups.reduce(0) { $0 + $1.videos.count })")
                         .font(.title2.bold())
                         .foregroundStyle(.white)
                     Text("Total Videos")
@@ -172,7 +203,7 @@ struct DuplicateFinderView: View {
                 }
             }
 
-            if let lastScanDate {
+            if let lastScanDate, !isScanning {
                 Divider().background(.white.opacity(0.2))
                 Text("Last scanned \(lastScanDate, format: .relative(presentation: .named))")
                     .font(.caption)
@@ -186,12 +217,12 @@ struct DuplicateFinderView: View {
 
     private func groupCard(_ group: DuplicateGroup) -> some View {
         HStack(spacing: 16) {
-            Image(systemName: group.similarityType == .exactDuplicate ? "equal.circle.fill" : "eye.circle.fill")
+            Image(systemName: groupIcon(group.similarityType))
                 .font(.title2)
-                .foregroundStyle(group.similarityType == .exactDuplicate ? .blue : .purple)
+                .foregroundStyle(groupColor(group.similarityType))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(group.similarityType == .exactDuplicate ? "Exact Duplicates" : "Visually Similar")
+                Text(groupLabel(group.similarityType))
                     .font(.headline)
                     .foregroundStyle(.white)
 
@@ -209,6 +240,32 @@ struct DuplicateFinderView: View {
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
     }
 
+    // MARK: - Helpers
+
+    private func groupIcon(_ type: DuplicateGroup.SimilarityType) -> String {
+        switch type {
+        case .exactDuplicate: "equal.circle.fill"
+        case .nearDuplicate: "doc.on.doc.fill"
+        case .visuallySimilar: "eye.circle.fill"
+        }
+    }
+
+    private func groupColor(_ type: DuplicateGroup.SimilarityType) -> Color {
+        switch type {
+        case .exactDuplicate: .blue
+        case .nearDuplicate: .orange
+        case .visuallySimilar: .purple
+        }
+    }
+
+    private func groupLabel(_ type: DuplicateGroup.SimilarityType) -> String {
+        switch type {
+        case .exactDuplicate: "Exact Duplicates"
+        case .nearDuplicate: "Near Duplicates"
+        case .visuallySimilar: "Visually Similar"
+        }
+    }
+
     // MARK: - Actions
 
     private func performScan() async {
@@ -216,7 +273,8 @@ struct DuplicateFinderView: View {
         service = svc
 
         do {
-            duplicateGroups = try await svc.detectDuplicates(in: videos, includeVisualSimilarity: includeVisualSimilarity)
+            let results = try await svc.detectDuplicates(in: videos, includeVisualSimilarity: includeVisualSimilarity)
+            duplicateGroups = results
         } catch {
             errorMessage = error.localizedDescription
         }

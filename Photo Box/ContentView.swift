@@ -119,7 +119,7 @@ struct ContentView: View {
     }
     
     private var videoCountHeader: some View {
-        Text("\(photoLibraryVideos.count) videos")
+        Text("\(displayedVideos.count) videos")
             .font(.subheadline)
             .foregroundStyle(.gray)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -148,19 +148,22 @@ struct ContentView: View {
             GlassEffectContainer(spacing: 30.0) {
                 LazyVStack(alignment: .leading, spacing: 32) {
                     ForEach(yearGroups, id: \.year) { group in
-                        VStack(alignment: .leading, spacing: 16) {
-                            HStack {
-                                Text(String(group.year))
-                                    .font(.title.bold())
-                                    .foregroundStyle(.white)
-                                Text("\(group.assets.count) videos")
-                                    .font(.caption)
-                                    .foregroundStyle(.gray)
-                            }
+                        let filtered = showFavoritesOnly ? group.assets.filter(\.isFavorite) : group.assets
+                        if !filtered.isEmpty {
+                            VStack(alignment: .leading, spacing: 16) {
+                                HStack {
+                                    Text(String(group.year))
+                                        .font(.title.bold())
+                                        .foregroundStyle(.white)
+                                    Text("\(filtered.count) videos")
+                                        .font(.caption)
+                                        .foregroundStyle(.gray)
+                                }
 
-                            LazyVGrid(columns: columns, spacing: 20) {
-                                ForEach(group.assets, id: \.localIdentifier) { asset in
-                                    videoCard(for: asset)
+                                LazyVGrid(columns: columns, spacing: 20) {
+                                    ForEach(filtered, id: \.localIdentifier) { asset in
+                                        videoCard(for: asset)
+                                    }
                                 }
                             }
                         }

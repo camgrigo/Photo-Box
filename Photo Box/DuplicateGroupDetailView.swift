@@ -76,14 +76,38 @@ struct DuplicateGroupDetailView: View {
         }
     }
 
+    private var typeIcon: String {
+        switch group.similarityType {
+        case .exactDuplicate: "equal.circle.fill"
+        case .nearDuplicate: "doc.on.doc.fill"
+        case .visuallySimilar: "eye.circle.fill"
+        }
+    }
+
+    private var typeColor: Color {
+        switch group.similarityType {
+        case .exactDuplicate: .blue
+        case .nearDuplicate: .orange
+        case .visuallySimilar: .purple
+        }
+    }
+
+    private var typeLabel: String {
+        switch group.similarityType {
+        case .exactDuplicate: "Exact Duplicates"
+        case .nearDuplicate: "Near Duplicates"
+        case .visuallySimilar: "Visually Similar"
+        }
+    }
+
     private var headerCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: group.similarityType == .exactDuplicate ? "equal.circle.fill" : "eye.circle.fill")
+                Image(systemName: typeIcon)
                     .font(.title2)
-                    .foregroundStyle(group.similarityType == .exactDuplicate ? .blue : .purple)
+                    .foregroundStyle(typeColor)
                 VStack(alignment: .leading) {
-                    Text(group.similarityType == .exactDuplicate ? "Exact Duplicates" : "Visually Similar")
+                    Text(typeLabel)
                         .font(.headline)
                         .foregroundStyle(.white)
                     Text("\(group.videos.count) videos")
