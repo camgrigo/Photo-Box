@@ -10,9 +10,9 @@ import Photos
 
 struct DuplicateVideoCard: View {
     let asset: PHAsset
-    let isSelected: Bool
-    let onToggle: () -> Void
-    var onChangeDate: (() -> Void)?
+    var isComparing: Bool = false
+    var onCompare: (() -> Void)?
+    var onDelete: (() -> Void)?
 
     @State private var thumbnail: PlatformImage?
     @State private var fileSize: String = "\u{2026}"
@@ -33,12 +33,17 @@ struct DuplicateVideoCard: View {
                         .overlay { ProgressView().tint(.white) }
                 }
 
-                if isSelected {
-                    Color.blue.opacity(0.3)
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title)
-                        .foregroundStyle(.white, .blue)
-                        .padding(8)
+                // Delete button
+                if let onDelete {
+                    Button {
+                        onDelete()
+                    } label: {
+                        Image(systemName: "trash.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.white, .red)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(6)
                 }
             }
 
@@ -66,21 +71,16 @@ struct DuplicateVideoCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
+                .stroke(isComparing ? Color.orange : Color.clear, lineWidth: 2)
         )
         .contentShape(Rectangle())
-        .onTapGesture { onToggle() }
+        .onTapGesture { onCompare?() }
         .contextMenu {
-            Button {
-                onToggle()
-            } label: {
-                Label(isSelected ? "Deselect" : "Select for Deletion", systemImage: isSelected ? "xmark.circle" : "checkmark.circle")
-            }
-            if let onChangeDate {
+            if onCompare != nil {
                 Button {
-                    onChangeDate()
+                    onCompare?()
                 } label: {
-                    Label("Change Date", systemImage: "calendar")
+                    Label(isComparing ? "Remove from Compare" : "Compare", systemImage: isComparing ? "minus.rectangle.on.rectangle" : "rectangle.on.rectangle")
                 }
             }
             Button {
@@ -92,6 +92,14 @@ struct DuplicateVideoCard: View {
                 }
             } label: {
                 Label(asset.isFavorite ? "Unfavorite" : "Favorite", systemImage: asset.isFavorite ? "heart.slash" : "heart")
+            }
+            if let onDelete {
+                Divider()
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
         .task {

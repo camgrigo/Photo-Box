@@ -26,7 +26,8 @@ struct ContentView: View {
     @State private var dateEditSuggestedYear: Int?
     @State private var dateEditYearSource: String?
     @State private var searchText = ""
-    @State private var selectedAsset: PHAsset?
+    @State private var selectedAssets: [PHAsset] = []
+    @State private var trimAsset: PHAsset?
     @Namespace private var namespace
 
     // Larger cards for Mac
@@ -84,10 +85,9 @@ struct ContentView: View {
                     }
                 }
 
-                if let selectedAsset {
+                if !selectedAssets.isEmpty {
                     Divider()
-                    VideoPlayerView(asset: selectedAsset, onDismiss: { self.selectedAsset = nil })
-                        .id(selectedAsset.localIdentifier)
+                    sidePlayerPanel
                         .frame(minWidth: 400, idealWidth: 600)
                 }
             }
@@ -110,7 +110,7 @@ struct ContentView: View {
                         }
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .navigation) {
                     Button {
                         showFavoritesOnly.toggle()
                     } label: {
@@ -121,7 +121,7 @@ struct ContentView: View {
                         .foregroundStyle(showFavoritesOnly ? .red : .white)
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .navigation) {
                     Button {
                         loadVideos()
                     } label: {
@@ -145,6 +145,9 @@ struct ContentView: View {
                         if groupByYear { buildYearGroups() }
                     }
                 )
+            }
+            .sheet(item: $trimAsset) { asset in
+                VideoEditorView(phAsset: asset)
             }
         }
     }
@@ -225,6 +228,11 @@ struct ContentView: View {
                     Label(asset.isFavorite ? "Unfavorite" : "Favorite", systemImage: asset.isFavorite ? "heart.slash" : "heart")
                 }
                 Button {
+                    trimAsset = asset
+                } label: {
+                    Label("Trim", systemImage: "scissors")
+                }
+                Button {
                     openDateEditor(for: asset)
                 } label: {
                     Label("Change Date", systemImage: "calendar")
@@ -242,9 +250,13 @@ struct ContentView: View {
     private func videoCardButton(for asset: PHAsset) -> some View {
         #if os(macOS)
         Button {
-            selectedAsset = asset
+            if let index = selectedAssets.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) {
+                selectedAssets.remove(at: index)
+            } else {
+                selectedAssets.append(asset)
+            }
         } label: {
-            MoviePosterCard(asset: asset)
+            MoviePosterCard(asset: asset, onToggleFavorite: { toggleFavorite(asset) })
                 .glassEffectID(asset.localIdentifier, in: namespace)
         }
         .buttonStyle(.plain)
@@ -253,7 +265,7 @@ struct ContentView: View {
             VideoPlayerView(asset: asset)
                 .navigationTransition(.zoom(sourceID: asset.localIdentifier, in: namespace))
         } label: {
-            MoviePosterCard(asset: asset)
+            MoviePosterCard(asset: asset, onToggleFavorite: { toggleFavorite(asset) })
                 .glassEffectID(asset.localIdentifier, in: namespace)
         }
         .buttonStyle(.plain)
@@ -261,6 +273,82 @@ struct ContentView: View {
         #endif
     }
     
+    @State private var sidePlayers: [String: AVPlayer] = [:]
+
+    private var sidePlayerPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("\(selectedAssets.count) video\(selectedAssets.count == 1 ? "" : "s")")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                Spacer()
+                if selectedAssets.count > 1 {
+                    Button {
+                        syncSidePlayers()
+                    } label: {
+                        Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Button {
+                    for p in sidePlayers.values { p.pause() }
+                    sidePlayers.removeAll()
+                    selectedAssets.removeAll()
+                } label: {
+                    Label("Close All", systemImage: "xmark")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            let columns = [GridItem(.adaptive(minimum: 300), spacing: 1)]
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 1) {
+                    ForEach(selectedAssets, id: \.localIdentifier) { asset in
+                        ZStack(alignment: .topTrailing) {
+                            VideoPlayerView(
+                                asset: asset,
+                                onPlayerReady: { player in
+                                    sidePlayers[asset.localIdentifier] = player
+                                }
+                            )
+                            .id(asset.localIdentifier)
+                            .aspectRatio(16/9, contentMode: .fit)
+
+                            Button {
+                                sidePlayers[asset.localIdentifier]?.pause()
+                                sidePlayers[asset.localIdentifier] = nil
+                                selectedAssets.removeAll { $0.localIdentifier == asset.localIdentifier }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.white, .black.opacity(0.5))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(8)
+                        }
+                    }
+                }
+            }
+        }
+        .background(.black)
+    }
+
+    private func syncSidePlayers() {
+        for player in sidePlayers.values {
+            player.pause()
+            player.seek(to: .zero)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            for player in self.sidePlayers.values {
+                player.play()
+            }
+        }
+    }
+
     private var emptyStateView: some View {
         VStack(spacing: 20) {
             Image(systemName: "film.stack")
@@ -419,8 +507,8 @@ struct ContentView: View {
 // MARK: - Movie Poster Card
 struct MoviePosterCard: View {
     let asset: PHAsset
+    var onToggleFavorite: (() -> Void)?
     @State private var thumbnail: PlatformImage?
-    @State private var isHovering = false
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -442,20 +530,31 @@ struct MoviePosterCard: View {
             }
 
             // Favorite badge (top-right)
-            if asset.isFavorite {
-                VStack {
-                    HStack {
-                        Spacer()
+            VStack {
+                HStack {
+                    Spacer()
+                    if let onToggleFavorite {
+                        Button {
+                            onToggleFavorite()
+                        } label: {
+                            Image(systemName: asset.isFavorite ? "heart.fill" : "heart")
+                                .font(.caption)
+                                .foregroundStyle(asset.isFavorite ? .red : .white.opacity(0.7))
+                                .padding(6)
+                                .glassEffect(.regular, in: .circle)
+                        }
+                        .buttonStyle(.plain)
+                    } else if asset.isFavorite {
                         Image(systemName: "heart.fill")
                             .font(.caption)
                             .foregroundStyle(.red)
                             .padding(6)
                             .glassEffect(.regular, in: .circle)
                     }
-                    Spacer()
                 }
-                .padding(6)
+                Spacer()
             }
+            .padding(6)
 
             // Gradient overlay
             LinearGradient(
@@ -488,14 +587,6 @@ struct MoviePosterCard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
-        .scaleEffect(isHovering ? 1.05 : 1.0)
-        .animation(.smooth(duration: 0.3), value: isHovering)
-        #if os(macOS) || targetEnvironment(macCatalyst)
-        .onHover { hovering in
-            isHovering = hovering
-        }
-        .help("Click to play video")
-        #endif
         .task {
             await loadThumbnail()
         }
@@ -559,15 +650,17 @@ struct VideoPlayerWindow: View {
 struct VideoPlayerView: View {
     let asset: PHAsset
     var onDismiss: (() -> Void)?
+    var onPlayerReady: ((AVPlayer) -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
     @State private var isLoading = true
     @State private var showingEditor = false
     @State private var isFavorite: Bool
 
-    init(asset: PHAsset, onDismiss: (() -> Void)? = nil) {
+    init(asset: PHAsset, onDismiss: (() -> Void)? = nil, onPlayerReady: ((AVPlayer) -> Void)? = nil) {
         self.asset = asset
         self.onDismiss = onDismiss
+        self.onPlayerReady = onPlayerReady
         _isFavorite = State(initialValue: asset.isFavorite)
     }
 
@@ -589,10 +682,9 @@ struct VideoPlayerView: View {
                 }
             }
         }
-        .navigationTitle(asset.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "Video")
         #if !os(macOS)
+        .navigationTitle(asset.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "Video")
         .navigationBarTitleDisplayMode(.inline)
-        #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -627,12 +719,7 @@ struct VideoPlayerView: View {
                 }
             }
         }
-        #if os(iOS)
         .fullScreenCover(isPresented: $showingEditor) {
-            VideoEditorView(phAsset: asset)
-        }
-        #else
-        .sheet(isPresented: $showingEditor) {
             VideoEditorView(phAsset: asset)
         }
         #endif
@@ -653,9 +740,11 @@ struct VideoPlayerView: View {
         PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, _ in
             if let playerItem = playerItem {
                 DispatchQueue.main.async {
-                    self.player = AVPlayer(playerItem: playerItem)
+                    let p = AVPlayer(playerItem: playerItem)
+                    self.player = p
                     self.isLoading = false
-                    self.player?.play()
+                    p.play()
+                    self.onPlayerReady?(p)
                 }
             }
         }

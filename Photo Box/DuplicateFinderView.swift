@@ -8,6 +8,7 @@
 import SwiftUI
 import Photos
 import SwiftData
+import AVKit
 
 struct YearMismatch: Identifiable {
     let id: String // localIdentifier
@@ -34,12 +35,10 @@ struct DuplicateFinderView: View {
 
     // Inline groups state
     @State private var expandedGroups: Set<UUID> = []
-    @State private var selections: [UUID: Set<String>] = [:]
     @State private var selectedFilter: SimilarityFilter = .all
     @State private var fileSizeCache: [String: Int64] = [:]
-    @State private var showingDeleteConfirmation = false
-    @State private var deletingGroupID: UUID?
     @State private var isDeleting = false
+    @State private var comparisonAssets: [PHAsset] = []
 
     enum SimilarityFilter: String, CaseIterable {
         case all = "All"
@@ -71,25 +70,45 @@ struct DuplicateFinderView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
+            VStack(spacing: 0) {
+                ZStack {
+                    Color.black.ignoresSafeArea()
 
-                if displayedGroups.isEmpty && yearMismatches.isEmpty {
-                    if isScanning {
-                        scanningView(service: service!)
-                    } else if hasScanned {
-                        noResultsView
+                    if displayedGroups.isEmpty && yearMismatches.isEmpty {
+                        if isScanning {
+                            scanningView(service: service!)
+                        } else if hasScanned {
+                            noResultsView
+                        } else {
+                            emptyStateView
+                        }
                     } else {
-                        emptyStateView
+                        liveResultsView
                     }
-                } else {
-                    liveResultsView
+
+                    if isDeleting {
+                        deletingOverlay
+                    }
                 }
 
-                if isDeleting {
-                    deletingOverlay
+                if !comparisonAssets.isEmpty {
+                    VideoComparisonPanel(
+                        assets: comparisonAssets,
+                        onRemove: { asset in
+                            withAnimation(.snappy) {
+                                comparisonAssets.removeAll { $0.localIdentifier == asset.localIdentifier }
+                            }
+                        },
+                        onClear: {
+                            withAnimation(.snappy) {
+                                comparisonAssets.removeAll()
+                            }
+                        }
+                    )
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .animation(.snappy, value: comparisonAssets.map(\.localIdentifier))
             .navigationTitle("Find Duplicates")
             #if !os(macOS)
             .navigationBarTitleDisplayMode(.large)
@@ -110,18 +129,6 @@ struct DuplicateFinderView: View {
                         detectYearMismatches()
                     }
                 )
-            }
-            .alert("Delete Videos", isPresented: $showingDeleteConfirmation) {
-                Button("Cancel", role: .cancel) { deletingGroupID = nil }
-                Button("Delete", role: .destructive) {
-                    if let id = deletingGroupID {
-                        Task { await deleteSelected(in: id) }
-                    }
-                    deletingGroupID = nil
-                }
-            } message: {
-                let count = selections[deletingGroupID ?? UUID()]?.count ?? 0
-                Text("Delete \(count) video\(count == 1 ? "" : "s")? They will be moved to Recently Deleted.")
             }
         }
         .task(id: videos.count) {
@@ -335,7 +342,6 @@ struct DuplicateFinderView: View {
 
     private func inlineGroupView(_ group: DuplicateGroup) -> some View {
         let isExpanded = expandedGroups.contains(group.id)
-        let selectedCount = selections[group.id]?.count ?? 0
 
         return VStack(spacing: 0) {
             // Header — tap to expand/collapse
@@ -355,13 +361,6 @@ struct DuplicateFinderView: View {
             // Expanded content
             if isExpanded {
                 VStack(spacing: 12) {
-                    Text("Tap videos to select, then delete duplicates.")
-                        .font(.caption)
-                        .foregroundStyle(.gray)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)],
                         spacing: 12
@@ -369,36 +368,34 @@ struct DuplicateFinderView: View {
                         ForEach(group.videos, id: \.localIdentifier) { asset in
                             DuplicateVideoCard(
                                 asset: asset,
-                                isSelected: selections[group.id]?.contains(asset.localIdentifier) ?? false,
-                                onToggle: { toggleSelection(asset.localIdentifier, in: group.id) }
+                                isComparing: comparisonAssets.contains(where: { $0.localIdentifier == asset.localIdentifier }),
+                                onCompare: { toggleComparison(asset) },
+                                onDelete: { Task { await deleteVideo(asset, in: group.id) } }
                             )
                         }
                     }
                     .padding(.horizontal, 12)
 
-                    if selectedCount > 0 {
-                        Button(role: .destructive) {
-                            deletingGroupID = group.id
-                            showingDeleteConfirmation = true
+                    if group.similarityType == .nearDuplicate || group.similarityType == .exactDuplicate {
+                        Button {
+                            Task { await keepOldest(in: group.id) }
                         } label: {
-                            Label("Delete \(selectedCount) Selected", systemImage: "trash")
+                            Label("Keep Oldest Only", systemImage: "clock.arrow.circlepath")
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(.orange)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
                         }
                         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 10))
                         .padding(.horizontal, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
-                .padding(.bottom, 12)
+                .padding(.vertical, 12)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .glassEffect(.regular, in: .rect(cornerRadius: 12))
         .animation(.snappy, value: isExpanded)
-        .animation(.snappy, value: selectedCount)
     }
 
     private func inlineGroupHeader(_ group: DuplicateGroup, isExpanded: Bool) -> some View {
@@ -445,33 +442,58 @@ struct DuplicateFinderView: View {
         .contentShape(Rectangle())
     }
 
-    // MARK: - Selection & Delete
+    // MARK: - Comparison
 
-    private func toggleSelection(_ assetID: String, in groupID: UUID) {
-        var set = selections[groupID] ?? []
-        if set.contains(assetID) {
-            set.remove(assetID)
-        } else {
-            set.insert(assetID)
+    private func toggleComparison(_ asset: PHAsset) {
+        withAnimation(.snappy) {
+            if let index = comparisonAssets.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) {
+                comparisonAssets.remove(at: index)
+            } else {
+                comparisonAssets.append(asset)
+            }
         }
-        selections[groupID] = set
     }
 
-    private func deleteSelected(in groupID: UUID) async {
-        guard let group = filteredGroups.first(where: { $0.id == groupID }),
-              let selected = selections[groupID], !selected.isEmpty else { return }
+    // MARK: - Delete
 
-        isDeleting = true
-        defer { isDeleting = false }
+    private func deleteVideo(_ asset: PHAsset, in groupID: UUID) async {
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.deleteAssets([asset] as NSFastEnumeration)
+            }
 
-        let toDelete = group.videos.filter { selected.contains($0.localIdentifier) }
+            let id = asset.localIdentifier
+            let descriptor = FetchDescriptor<VideoAnalysisCache>(
+                predicate: #Predicate { $0.localIdentifier == id }
+            )
+            if let cached = try? modelContext.fetch(descriptor).first {
+                modelContext.delete(cached)
+            }
+            try? modelContext.save()
+
+            removeAssetFromGroups(id, in: groupID)
+            comparisonAssets.removeAll { $0.localIdentifier == id }
+            loadFileSizeCache()
+        } catch {
+            // User cancelled native confirmation — no-op
+        }
+    }
+
+    private func keepOldest(in groupID: UUID) async {
+        guard let group = displayedGroups.first(where: { $0.id == groupID }),
+              group.videos.count > 1 else { return }
+
+        let sorted = group.videos.sorted {
+            ($0.creationDate ?? .distantFuture) < ($1.creationDate ?? .distantFuture)
+        }
+        let toDelete = Array(sorted.dropFirst())
+        let deleteIDs = Set(toDelete.map(\.localIdentifier))
 
         do {
             try await PHPhotoLibrary.shared().performChanges {
                 PHAssetChangeRequest.deleteAssets(toDelete as NSFastEnumeration)
             }
 
-            // Clean up SwiftData cache entries
             for asset in toDelete {
                 let id = asset.localIdentifier
                 let descriptor = FetchDescriptor<VideoAnalysisCache>(
@@ -483,36 +505,34 @@ struct DuplicateFinderView: View {
             }
             try? modelContext.save()
 
-            // Clear selection
-            selections[groupID] = nil
-
-            // Update groups — remove deleted assets, drop groups with <2 remaining
-            duplicateGroups = duplicateGroups.compactMap { g in
-                guard g.id == groupID else { return g }
-                let remaining = g.videos.filter { !selected.contains($0.localIdentifier) }
-                return remaining.count > 1
-                    ? DuplicateGroup(id: g.id, videos: remaining, similarityType: g.similarityType, similarityScore: g.similarityScore)
-                    : nil
-            }
-
-            if let service {
-                service.foundGroups = service.foundGroups.compactMap { g in
-                    guard g.id == groupID else { return g }
-                    let remaining = g.videos.filter { !selected.contains($0.localIdentifier) }
-                    return remaining.count > 1
-                        ? DuplicateGroup(id: g.id, videos: remaining, similarityType: g.similarityType, similarityScore: g.similarityScore)
-                        : nil
-                }
-            }
-
-            // Collapse if fully deleted
-            if !filteredGroups.contains(where: { $0.id == groupID }) {
-                expandedGroups.remove(groupID)
-            }
-
+            removeAssetsFromGroups(deleteIDs, in: groupID)
+            comparisonAssets.removeAll { deleteIDs.contains($0.localIdentifier) }
             loadFileSizeCache()
         } catch {
-            errorMessage = error.localizedDescription
+            // User cancelled native confirmation — no-op
+        }
+    }
+
+    private func removeAssetFromGroups(_ assetID: String, in groupID: UUID) {
+        removeAssetsFromGroups([assetID], in: groupID)
+    }
+
+    private func removeAssetsFromGroups(_ assetIDs: Set<String>, in groupID: UUID) {
+        let update: (DuplicateGroup) -> DuplicateGroup? = { g in
+            guard g.id == groupID else { return g }
+            let remaining = g.videos.filter { !assetIDs.contains($0.localIdentifier) }
+            return remaining.count > 1
+                ? DuplicateGroup(id: g.id, videos: remaining, similarityType: g.similarityType, similarityScore: g.similarityScore)
+                : nil
+        }
+
+        duplicateGroups = duplicateGroups.compactMap(update)
+        if let service {
+            service.foundGroups = service.foundGroups.compactMap(update)
+        }
+
+        if !filteredGroups.contains(where: { $0.id == groupID }) {
+            expandedGroups.remove(groupID)
         }
     }
 
@@ -829,6 +849,121 @@ private struct MismatchThumbnail: View {
             ) { img, _ in
                 image = img
             }
+        }
+    }
+}
+
+// MARK: - Video Comparison Panel
+
+private struct VideoComparisonPanel: View {
+    let assets: [PHAsset]
+    let onRemove: (PHAsset) -> Void
+    let onClear: () -> Void
+
+    @State private var players: [String: AVPlayer] = [:]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+
+            HStack(spacing: 12) {
+                Label("Comparing \(assets.count)", systemImage: "rectangle.split.2x1")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+
+                Spacer()
+
+                Button {
+                    syncPlayback()
+                } label: {
+                    Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    for player in players.values { player.pause() }
+                    players.removeAll()
+                    onClear()
+                } label: {
+                    Label("Clear", systemImage: "xmark")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            HStack(spacing: 1) {
+                ForEach(assets, id: \.localIdentifier) { asset in
+                    ZStack(alignment: .topTrailing) {
+                        ComparisonPlayerCell(asset: asset) { player in
+                            players[asset.localIdentifier] = player
+                        }
+
+                        Button {
+                            players[asset.localIdentifier]?.pause()
+                            players[asset.localIdentifier] = nil
+                            onRemove(asset)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(.white, .black.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(8)
+                    }
+                }
+            }
+            .frame(height: 280)
+        }
+        .background(.black)
+    }
+
+    private func syncPlayback() {
+        let activePlayers = players.values.filter { _ in true }
+        for player in activePlayers {
+            player.pause()
+            player.seek(to: .zero)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            for player in activePlayers {
+                player.play()
+            }
+        }
+    }
+}
+
+private struct ComparisonPlayerCell: View {
+    let asset: PHAsset
+    let onPlayerReady: (AVPlayer) -> Void
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        Group {
+            if let player {
+                VideoPlayer(player: player)
+            } else {
+                Rectangle().fill(.gray.opacity(0.2))
+                    .overlay { ProgressView().tint(.white) }
+            }
+        }
+        .task {
+            let options = PHVideoRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.deliveryMode = .highQualityFormat
+            PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, _ in
+                if let item {
+                    DispatchQueue.main.async {
+                        let p = AVPlayer(playerItem: item)
+                        self.player = p
+                        onPlayerReady(p)
+                    }
+                }
+            }
+        }
+        .onDisappear {
+            player?.pause()
         }
     }
 }
