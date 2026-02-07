@@ -103,22 +103,19 @@ struct DuplicateVideoCard: View {
             }
         }
         .task {
-            await loadThumbnail()
+            loadThumbnail()
             loadFileSize()
         }
     }
 
-    private func loadThumbnail() async {
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
-        options.isNetworkAccessAllowed = true
+    private static let thumbSize = CGSize(width: 300, height: 450)
 
-        PHImageManager.default().requestImage(
-            for: asset,
-            targetSize: CGSize(width: 300, height: 450),
-            contentMode: .aspectFill,
-            options: options
-        ) { image, _ in
+    private func loadThumbnail() {
+        if let cached = ThumbnailCache.shared.thumbnail(for: asset, size: Self.thumbSize) {
+            thumbnail = cached
+            return
+        }
+        ThumbnailCache.shared.loadThumbnail(for: asset, size: Self.thumbSize) { image in
             thumbnail = image
         }
     }

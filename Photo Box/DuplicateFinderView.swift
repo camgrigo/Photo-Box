@@ -799,6 +799,8 @@ private struct GroupThumbnailPreview: View {
     let asset: PHAsset
     @State private var image: PlatformImage?
 
+    private static let thumbSize = CGSize(width: 64, height: 96)
+
     var body: some View {
         Group {
             if let image {
@@ -810,15 +812,11 @@ private struct GroupThumbnailPreview: View {
             }
         }
         .task {
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .fastFormat
-            options.isNetworkAccessAllowed = false
-            PHImageManager.default().requestImage(
+            ThumbnailCache.shared.loadThumbnail(
                 for: asset,
-                targetSize: CGSize(width: 64, height: 96),
-                contentMode: .aspectFill,
-                options: options
-            ) { img, _ in image = img }
+                size: Self.thumbSize,
+                deliveryMode: .fastFormat
+            ) { img in image = img }
         }
     }
 }
@@ -828,6 +826,8 @@ private struct GroupThumbnailPreview: View {
 private struct MismatchThumbnail: View {
     let asset: PHAsset
     @State private var image: PlatformImage?
+
+    private static let thumbSize = CGSize(width: 100, height: 100)
 
     var body: some View {
         Group {
@@ -841,49 +841,89 @@ private struct MismatchThumbnail: View {
             }
         }
         .task {
-            PHImageManager.default().requestImage(
+            ThumbnailCache.shared.loadThumbnail(
                 for: asset,
-                targetSize: CGSize(width: 100, height: 100),
-                contentMode: .aspectFill,
-                options: nil
-            ) { img, _ in
-                image = img
-            }
+                size: Self.thumbSize,
+                deliveryMode: .fastFormat
+            ) { img in image = img }
         }
     }
 }
 
 // MARK: - Video Comparison Panel
 
-private struct VideoComparisonPanel: View {
+struct VideoComparisonPanel: View {
     let assets: [PHAsset]
     let onRemove: (PHAsset) -> Void
     let onClear: () -> Void
 
     @State private var players: [String: AVPlayer] = [:]
+    @State private var durations: [String: TimeInterval] = [:]
+    @State private var isLocked = false
+    @State private var lockObserver: Any?
 
     var body: some View {
         VStack(spacing: 0) {
             Divider()
 
-            HStack(spacing: 12) {
+            // Toolbar
+            HStack(spacing: 8) {
                 Label("Comparing \(assets.count)", systemImage: "rectangle.split.2x1")
                     .font(.caption.bold())
                     .foregroundStyle(.white)
 
                 Spacer()
 
+                // Time navigation buttons
+                Button { seekAll(to: .start) } label: {
+                    Image(systemName: "backward.end.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .help("Jump to start")
+
+                Button { seekAll(to: .middle) } label: {
+                    Image(systemName: "forward.frame.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .help("Jump to middle")
+
+                Button { seekAll(to: .nearEnd) } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .help("Jump to near end")
+
+                Divider().frame(height: 16)
+
+                // Lock sync toggle
                 Button {
-                    syncPlayback()
+                    isLocked.toggle()
+                    if isLocked {
+                        startLockSync()
+                    } else {
+                        stopLockSync()
+                    }
                 } label: {
+                    Label("Lock", systemImage: isLocked ? "lock.fill" : "lock.open")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .tint(isLocked ? .orange : nil)
+
+                Button { syncPlayback() } label: {
                     Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
 
                 Button {
+                    stopLockSync()
                     for player in players.values { player.pause() }
                     players.removeAll()
+                    durations.removeAll()
                     onClear()
                 } label: {
                     Label("Clear", systemImage: "xmark")
@@ -897,13 +937,16 @@ private struct VideoComparisonPanel: View {
             HStack(spacing: 1) {
                 ForEach(assets, id: \.localIdentifier) { asset in
                     ZStack(alignment: .topTrailing) {
-                        ComparisonPlayerCell(asset: asset) { player in
+                        ComparisonPlayerCell(asset: asset) { player, duration in
                             players[asset.localIdentifier] = player
+                            durations[asset.localIdentifier] = duration
+                            if isLocked { startLockSync() }
                         }
 
                         Button {
                             players[asset.localIdentifier]?.pause()
                             players[asset.localIdentifier] = nil
+                            durations[asset.localIdentifier] = nil
                             onRemove(asset)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -918,25 +961,76 @@ private struct VideoComparisonPanel: View {
             .frame(height: 280)
         }
         .background(.black)
+        .onDisappear { stopLockSync() }
     }
 
+    // MARK: - Seek Positions
+
+    private enum SeekPosition {
+        case start, middle, nearEnd
+    }
+
+    private func seekAll(to position: SeekPosition) {
+        for (id, player) in players {
+            let dur = durations[id] ?? player.currentItem?.duration.seconds ?? 0
+            guard dur.isFinite, dur > 0 else { continue }
+            let time: TimeInterval
+            switch position {
+            case .start:
+                time = 0
+            case .middle:
+                time = dur / 2
+            case .nearEnd:
+                let offset = min(30, dur * 0.05)
+                time = max(0, dur - offset)
+            }
+            player.seek(to: CMTime(seconds: time, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+    }
+
+    // MARK: - Sync
+
     private func syncPlayback() {
-        let activePlayers = players.values.filter { _ in true }
-        for player in activePlayers {
+        for player in players.values {
             player.pause()
             player.seek(to: .zero)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            for player in activePlayers {
-                player.play()
+            for player in players.values { player.play() }
+        }
+    }
+
+    // MARK: - Lock Sync
+
+    private func startLockSync() {
+        stopLockSync()
+        // Pick the first player as the "leader"
+        guard let leader = players.values.first else { return }
+        let followers = Array(players.values.dropFirst())
+
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        lockObserver = leader.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+            for follower in followers {
+                let followerDur = follower.currentItem?.duration.seconds ?? 0
+                guard followerDur.isFinite, followerDur > 0 else { continue }
+                // Clamp to follower's duration
+                let clamped = min(time.seconds, followerDur)
+                follower.seek(to: CMTime(seconds: clamped, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
             }
         }
+    }
+
+    private func stopLockSync() {
+        if let observer = lockObserver, let leader = players.values.first {
+            leader.removeTimeObserver(observer)
+        }
+        lockObserver = nil
     }
 }
 
 private struct ComparisonPlayerCell: View {
     let asset: PHAsset
-    let onPlayerReady: (AVPlayer) -> Void
+    let onPlayerReady: (AVPlayer, TimeInterval) -> Void
     @State private var player: AVPlayer?
 
     var body: some View {
@@ -957,7 +1051,8 @@ private struct ComparisonPlayerCell: View {
                     DispatchQueue.main.async {
                         let p = AVPlayer(playerItem: item)
                         self.player = p
-                        onPlayerReady(p)
+                        let dur = item.asset.duration.seconds
+                        onPlayerReady(p, dur.isFinite ? dur : asset.duration)
                     }
                 }
             }

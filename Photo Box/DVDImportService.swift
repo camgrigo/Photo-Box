@@ -43,6 +43,7 @@ struct DVDDisc: Identifiable {
 final class DVDImportService {
     var detectedDiscs: [DVDDisc] = []
     var isScanning = false
+    var isDetecting = false
     var scanProgress: Double = 0
     var scanStatus = ""
     var conversionProgress: [Int: Double] = [:]
@@ -53,6 +54,7 @@ final class DVDImportService {
 
     private var mountObserver: NSObjectProtocol?
     private var unmountObserver: NSObjectProtocol?
+    private var detectionTask: Task<Void, Never>?
 
     func estimatedTimeRemaining(for titleId: Int) -> String? {
         guard let start = conversionStartTime[titleId],
@@ -106,25 +108,46 @@ final class DVDImportService {
     }
 
     func detectDVDs() {
+        detectionTask?.cancel()
+        detectionTask = Task {
+            isDetecting = true
+            defer { isDetecting = false }
+
+            // Retry a few times to allow disc spin-up / mount
+            for attempt in 0..<6 {
+                if Task.isCancelled { return }
+                let discs = scanForDiscs()
+                if !discs.isEmpty {
+                    detectedDiscs = discs
+                    return
+                }
+                if attempt < 5 {
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+            detectedDiscs = []
+        }
+    }
+
+    private func scanForDiscs() -> [DVDDisc] {
         let fileManager = FileManager.default
         guard let volumes = try? fileManager.contentsOfDirectory(
             at: URL(fileURLWithPath: "/Volumes"),
             includingPropertiesForKeys: nil
-        ) else { return }
+        ) else { return [] }
 
         var discs: [DVDDisc] = []
         for volume in volumes {
             let videoTS = volume.appendingPathComponent("VIDEO_TS")
             if fileManager.fileExists(atPath: videoTS.path) {
-                let disc = DVDDisc(
+                discs.append(DVDDisc(
                     volumeName: volume.lastPathComponent,
                     mountPoint: volume,
                     videoTSPath: videoTS
-                )
-                discs.append(disc)
+                ))
             }
         }
-        detectedDiscs = discs
+        return discs
     }
 
     // MARK: - Title Scanning

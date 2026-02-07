@@ -68,7 +68,7 @@ struct ContentView: View {
 
     private var libraryTab: some View {
         NavigationStack {
-            HStack(spacing: 0) {
+            VStack(spacing: 0) {
                 ZStack {
                     Color.black.ignoresSafeArea()
 
@@ -86,11 +86,23 @@ struct ContentView: View {
                 }
 
                 if !selectedAssets.isEmpty {
-                    Divider()
-                    sidePlayerPanel
-                        .frame(minWidth: 400, idealWidth: 600)
+                    VideoComparisonPanel(
+                        assets: selectedAssets,
+                        onRemove: { asset in
+                            withAnimation(.snappy) {
+                                selectedAssets.removeAll { $0.localIdentifier == asset.localIdentifier }
+                            }
+                        },
+                        onClear: {
+                            withAnimation(.snappy) {
+                                selectedAssets.removeAll()
+                            }
+                        }
+                    )
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .animation(.snappy, value: selectedAssets.map(\.localIdentifier))
             .navigationTitle("Video Library")
             #if !os(macOS)
             .navigationBarTitleDisplayMode(.large)
@@ -273,82 +285,6 @@ struct ContentView: View {
         #endif
     }
     
-    @State private var sidePlayers: [String: AVPlayer] = [:]
-
-    private var sidePlayerPanel: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("\(selectedAssets.count) video\(selectedAssets.count == 1 ? "" : "s")")
-                    .font(.caption.bold())
-                    .foregroundStyle(.white)
-                Spacer()
-                if selectedAssets.count > 1 {
-                    Button {
-                        syncSidePlayers()
-                    } label: {
-                        Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                }
-                Button {
-                    for p in sidePlayers.values { p.pause() }
-                    sidePlayers.removeAll()
-                    selectedAssets.removeAll()
-                } label: {
-                    Label("Close All", systemImage: "xmark")
-                        .font(.caption)
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
-            let columns = [GridItem(.adaptive(minimum: 300), spacing: 1)]
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 1) {
-                    ForEach(selectedAssets, id: \.localIdentifier) { asset in
-                        ZStack(alignment: .topTrailing) {
-                            VideoPlayerView(
-                                asset: asset,
-                                onPlayerReady: { player in
-                                    sidePlayers[asset.localIdentifier] = player
-                                }
-                            )
-                            .id(asset.localIdentifier)
-                            .aspectRatio(16/9, contentMode: .fit)
-
-                            Button {
-                                sidePlayers[asset.localIdentifier]?.pause()
-                                sidePlayers[asset.localIdentifier] = nil
-                                selectedAssets.removeAll { $0.localIdentifier == asset.localIdentifier }
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.white, .black.opacity(0.5))
-                            }
-                            .buttonStyle(.plain)
-                            .padding(8)
-                        }
-                    }
-                }
-            }
-        }
-        .background(.black)
-    }
-
-    private func syncSidePlayers() {
-        for player in sidePlayers.values {
-            player.pause()
-            player.seek(to: .zero)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            for player in self.sidePlayers.values {
-                player.play()
-            }
-        }
-    }
-
     private var emptyStateView: some View {
         VStack(spacing: 20) {
             Image(systemName: "film.stack")
@@ -588,29 +524,25 @@ struct MoviePosterCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
         .task {
-            await loadThumbnail()
+            loadThumbnail()
         }
     }
-    
-    private func loadThumbnail() async {
-        let imageManager = PHImageManager.default()
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
-        options.isSynchronous = false
 
+    private static let targetSize: CGSize = {
         #if os(macOS) || targetEnvironment(macCatalyst)
-        let targetSize = CGSize(width: 600, height: 900)
+        CGSize(width: 600, height: 900)
         #else
-        let targetSize = CGSize(width: 400, height: 600)
+        CGSize(width: 400, height: 600)
         #endif
+    }()
 
-        imageManager.requestImage(
-            for: asset,
-            targetSize: targetSize,
-            contentMode: .aspectFill,
-            options: options
-        ) { image, _ in
+    private func loadThumbnail() {
+        // Show cached image immediately if available
+        if let cached = ThumbnailCache.shared.thumbnail(for: asset, size: Self.targetSize) {
+            thumbnail = cached
+            return
+        }
+        ThumbnailCache.shared.loadThumbnail(for: asset, size: Self.targetSize) { image in
             thumbnail = image
         }
     }

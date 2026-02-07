@@ -19,7 +19,9 @@ struct DVDImportView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                if service.detectedDiscs.isEmpty {
+                if service.isDetecting {
+                    discSpinUpView
+                } else if service.detectedDiscs.isEmpty {
                     noDiscView
                 } else if let disc = service.detectedDiscs.first {
                     if service.isScanning {
@@ -45,6 +47,25 @@ struct DVDImportView: View {
         }
         .onDisappear {
             service.stopObservingDiscs()
+        }
+    }
+
+    // MARK: - Disc Spin-Up
+
+    private var discSpinUpView: some View {
+        VStack(spacing: 20) {
+            ProgressView()
+                .scaleEffect(1.5)
+                .tint(.blue)
+            Text("Looking for disc\u{2026}")
+                .font(.title2)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white)
+            Text("The disc drive is spinning up. This may take a few moments.")
+                .font(.body)
+                .foregroundStyle(.gray)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
         }
     }
 
