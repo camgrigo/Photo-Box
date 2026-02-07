@@ -91,7 +91,9 @@ struct DuplicateFinderView: View {
                 }
             }
             .navigationTitle("Find Duplicates")
+            #if !os(macOS)
             .navigationBarTitleDisplayMode(.large)
+            #endif
             .toolbar {
                 if hasScanned, !isScanning {
                     ToolbarItem(placement: .primaryAction) {
@@ -775,12 +777,12 @@ struct DuplicateFinderView: View {
 
 private struct GroupThumbnailPreview: View {
     let asset: PHAsset
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
 
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
@@ -805,12 +807,12 @@ private struct GroupThumbnailPreview: View {
 
 private struct MismatchThumbnail: View {
     let asset: PHAsset
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
 
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {

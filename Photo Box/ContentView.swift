@@ -26,6 +26,7 @@ struct ContentView: View {
     @State private var dateEditSuggestedYear: Int?
     @State private var dateEditYearSource: String?
     @State private var searchText = ""
+    @State private var selectedAsset: PHAsset?
     @Namespace private var namespace
 
     // Larger cards for Mac
@@ -52,6 +53,11 @@ struct ContentView: View {
             Tab("Duplicates", systemImage: "doc.on.doc") {
                 DuplicateFinderView(videos: photoLibraryVideos)
             }
+            #if os(macOS)
+            Tab("DVD", systemImage: "opticaldisc") {
+                DVDImportView()
+            }
+            #endif
         }
         .preferredColorScheme(.dark)
         .task {
@@ -61,26 +67,37 @@ struct ContentView: View {
 
     private var libraryTab: some View {
         NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
+            HStack(spacing: 0) {
+                ZStack {
+                    Color.black.ignoresSafeArea()
 
-                if authorizationStatus == .authorized || authorizationStatus == .limited {
-                    if photoLibraryVideos.isEmpty {
-                        emptyStateView
-                    } else if groupByYear {
-                        yearGroupedView
+                    if authorizationStatus == .authorized || authorizationStatus == .limited {
+                        if photoLibraryVideos.isEmpty {
+                            emptyStateView
+                        } else if groupByYear {
+                            yearGroupedView
+                        } else {
+                            videoGridView
+                        }
                     } else {
-                        videoGridView
+                        permissionRequestView
                     }
-                } else {
-                    permissionRequestView
+                }
+
+                if let selectedAsset {
+                    Divider()
+                    VideoPlayerView(asset: selectedAsset, onDismiss: { self.selectedAsset = nil })
+                        .id(selectedAsset.localIdentifier)
+                        .frame(minWidth: 400, idealWidth: 600)
                 }
             }
             .navigationTitle("Video Library")
+            #if !os(macOS)
             .navigationBarTitleDisplayMode(.large)
+            #endif
             .toolbar {
                 if !photoLibraryVideos.isEmpty {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: .navigation) {
                         Button {
                             groupByYear.toggle()
                             if groupByYear { buildYearGroups() }
@@ -93,7 +110,7 @@ struct ContentView: View {
                         }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button {
                         showFavoritesOnly.toggle()
                     } label: {
@@ -104,7 +121,7 @@ struct ContentView: View {
                         .foregroundStyle(showFavoritesOnly ? .red : .white)
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button {
                         loadVideos()
                     } label: {
@@ -223,25 +240,25 @@ struct ContentView: View {
 
     @ViewBuilder
     private func videoCardButton(for asset: PHAsset) -> some View {
-        if supportsMultipleWindows {
-            Button {
-                openWindow(id: "video-player", value: asset.localIdentifier)
-            } label: {
-                MoviePosterCard(asset: asset)
-                    .glassEffectID(asset.localIdentifier, in: namespace)
-            }
-            .buttonStyle(.plain)
-        } else {
-            NavigationLink {
-                VideoPlayerView(asset: asset)
-                    .navigationTransition(.zoom(sourceID: asset.localIdentifier, in: namespace))
-            } label: {
-                MoviePosterCard(asset: asset)
-                    .glassEffectID(asset.localIdentifier, in: namespace)
-            }
-            .buttonStyle(.plain)
-            .matchedTransitionSource(id: asset.localIdentifier, in: namespace)
+        #if os(macOS)
+        Button {
+            selectedAsset = asset
+        } label: {
+            MoviePosterCard(asset: asset)
+                .glassEffectID(asset.localIdentifier, in: namespace)
         }
+        .buttonStyle(.plain)
+        #else
+        NavigationLink {
+            VideoPlayerView(asset: asset)
+                .navigationTransition(.zoom(sourceID: asset.localIdentifier, in: namespace))
+        } label: {
+            MoviePosterCard(asset: asset)
+                .glassEffectID(asset.localIdentifier, in: namespace)
+        }
+        .buttonStyle(.plain)
+        .matchedTransitionSource(id: asset.localIdentifier, in: namespace)
+        #endif
     }
     
     private var emptyStateView: some View {
@@ -402,14 +419,14 @@ struct ContentView: View {
 // MARK: - Movie Poster Card
 struct MoviePosterCard: View {
     let asset: PHAsset
-    @State private var thumbnail: UIImage?
+    @State private var thumbnail: PlatformImage?
     @State private var isHovering = false
-    
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             // Poster Image
             if let thumbnail = thumbnail {
-                Image(uiImage: thumbnail)
+                Image(platformImage: thumbnail)
                     .resizable()
                     .aspectRatio(2/3, contentMode: .fill)
                     .frame(maxWidth: .infinity)
@@ -473,7 +490,7 @@ struct MoviePosterCard: View {
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
         .scaleEffect(isHovering ? 1.05 : 1.0)
         .animation(.smooth(duration: 0.3), value: isHovering)
-        #if targetEnvironment(macCatalyst)
+        #if os(macOS) || targetEnvironment(macCatalyst)
         .onHover { hovering in
             isHovering = hovering
         }
@@ -490,14 +507,13 @@ struct MoviePosterCard: View {
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
         options.isSynchronous = false
-        
-        // Higher resolution for Mac displays
-        #if targetEnvironment(macCatalyst)
+
+        #if os(macOS) || targetEnvironment(macCatalyst)
         let targetSize = CGSize(width: 600, height: 900)
         #else
         let targetSize = CGSize(width: 400, height: 600)
         #endif
-        
+
         imageManager.requestImage(
             for: asset,
             targetSize: targetSize,
@@ -542,14 +558,16 @@ struct VideoPlayerWindow: View {
 // MARK: - Video Player View
 struct VideoPlayerView: View {
     let asset: PHAsset
+    var onDismiss: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
     @State private var isLoading = true
     @State private var showingEditor = false
     @State private var isFavorite: Bool
 
-    init(asset: PHAsset) {
+    init(asset: PHAsset, onDismiss: (() -> Void)? = nil) {
         self.asset = asset
+        self.onDismiss = onDismiss
         _isFavorite = State(initialValue: asset.isFavorite)
     }
 
@@ -572,9 +590,11 @@ struct VideoPlayerView: View {
             }
         }
         .navigationTitle(asset.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "Video")
+        #if !os(macOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task {
                         try? await PHPhotoLibrary.shared().performChanges {
@@ -588,7 +608,7 @@ struct VideoPlayerView: View {
                         .foregroundStyle(isFavorite ? .red : .white)
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     player?.pause()
                     showingEditor = true
@@ -596,16 +616,26 @@ struct VideoPlayerView: View {
                     Label("Edit", systemImage: "scissors")
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button("Done") {
                     player?.pause()
-                    dismiss()
+                    if let onDismiss {
+                        onDismiss()
+                    } else {
+                        dismiss()
+                    }
                 }
             }
         }
+        #if os(iOS)
         .fullScreenCover(isPresented: $showingEditor) {
             VideoEditorView(phAsset: asset)
         }
+        #else
+        .sheet(isPresented: $showingEditor) {
+            VideoEditorView(phAsset: asset)
+        }
+        #endif
         .task {
             await loadVideo()
         }

@@ -26,7 +26,7 @@ struct VideoTimelineView: View {
         case split
     }
 
-    @State private var thumbnails: [UIImage] = []
+    @State private var thumbnails: [PlatformImage] = []
     @State private var isDraggingStart = false
     @State private var isDraggingEnd = false
 
@@ -68,7 +68,7 @@ struct VideoTimelineView: View {
     private func filmstrip(width: CGFloat) -> some View {
         HStack(spacing: 0) {
             ForEach(thumbnails.indices, id: \.self) { index in
-                Image(uiImage: thumbnails[index])
+                Image(platformImage: thumbnails[index])
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: width / CGFloat(max(thumbnails.count, 1)), height: timelineHeight)
@@ -219,14 +219,18 @@ struct VideoTimelineView: View {
         let durationSeconds = duration.seconds
         guard durationSeconds > 0 else { return }
 
-        var images: [UIImage] = []
+        var images: [PlatformImage] = []
 
         for i in 0..<thumbnailCount {
             let fraction = Double(i) / Double(thumbnailCount)
             let time = CMTime(seconds: fraction * durationSeconds, preferredTimescale: 600)
 
             if let cgImage = try? await generator.image(at: time).image {
+                #if canImport(UIKit)
                 images.append(UIImage(cgImage: cgImage))
+                #elseif canImport(AppKit)
+                images.append(NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height)))
+                #endif
             }
         }
 

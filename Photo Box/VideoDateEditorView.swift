@@ -48,7 +48,9 @@ struct VideoDateEditorView: View {
                 }
             }
             .navigationTitle("Change Date")
+            #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

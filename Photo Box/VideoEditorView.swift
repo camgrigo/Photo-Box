@@ -51,7 +51,9 @@ struct VideoEditorView: View {
                 }
             }
             .navigationTitle("Edit Video")
+            #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

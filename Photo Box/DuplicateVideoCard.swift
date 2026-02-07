@@ -14,14 +14,14 @@ struct DuplicateVideoCard: View {
     let onToggle: () -> Void
     var onChangeDate: (() -> Void)?
 
-    @State private var thumbnail: UIImage?
+    @State private var thumbnail: PlatformImage?
     @State private var fileSize: String = "\u{2026}"
 
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .topTrailing) {
                 if let thumbnail {
-                    Image(uiImage: thumbnail)
+                    Image(platformImage: thumbnail)
                         .resizable()
                         .aspectRatio(2/3, contentMode: .fill)
                         .frame(maxWidth: .infinity)
